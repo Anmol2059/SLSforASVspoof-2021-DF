@@ -77,11 +77,10 @@ class Model(nn.Module):
         )
 
     def forward(self, x, domain_labels=None, percent=0.33):
-        # Step 1: Extract features from the SSL model
         x_ssl_feat, layerResult = self.ssl_model.extract_feat(x.squeeze(-1))  # Extracted layer results
         y0, fullfeature = getAttenF(layerResult)  # Process intermediate layers
 
-        # Step 2: Apply domain-sensitive dropout using LayerDiscriminator during training
+        # Added: Apply domain-sensitive dropout using LayerDiscriminator during training
         if self.training and domain_labels is not None:
             _, mask = self.layer_discriminator(
                 fullfeature,  # Feature maps
@@ -90,7 +89,7 @@ class Model(nn.Module):
             )
             fullfeature = fullfeature * mask  # Apply mask to suppress domain-sensitive channels
 
-        # Step 3: Original forward pass
+        # Original forward pass
         y0 = self.fc0(y0)
         y0 = self.sig(y0)
         y0 = y0.view(y0.shape[0], y0.shape[1], y0.shape[2], -1)
