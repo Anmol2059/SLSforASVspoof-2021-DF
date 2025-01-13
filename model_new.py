@@ -55,7 +55,6 @@ def getAttenF(layerResult):
     fullfeature = torch.cat(fullf, dim=1)  # Combine full features
     return layery, fullfeature
 
-
 class Model(nn.Module):
     def __init__(self, args, device, num_domains=3):
         super().__init__()
@@ -69,27 +68,40 @@ class Model(nn.Module):
         self.fc3 = nn.Linear(1024, 2)
         self.logsoftmax = nn.LogSoftmax(dim=1)
         
-        # Add LayerDiscriminator
-        self.layer_discriminator = LayerDiscriminator(
-            num_channels=1024,  # Number of feature channels
-            num_classes=num_domains,  # Number of domains
-            lambd=1.0  # Gradient reversal strength
-        )
+        # Add LayerDiscriminators for each SSL layer
+        self.domain_discriminators = nn.ModuleList([
+            LayerDiscriminator(
+                num_channels=1024,  # Adjust based on each layer's channel size
+                num_classes=num_domains,
+                lambd=1.0  # Gradient reversal strength
+            ) for _ in range(24)  # Assuming 24 layers in `layerResult`
+        ])
 
-    def forward(self, x, domain_labels=None, percent=0.33):
-        x_ssl_feat, layerResult = self.ssl_model.extract_feat(x.squeeze(-1))  # Extracted layer results
-        y0, fullfeature = getAttenF(layerResult)  # Process intermediate layers
-
-        # Added: Apply domain-sensitive dropout using LayerDiscriminator during training
-        if self.training and domain_labels is not None:
-            _, mask = self.layer_discriminator(
-                fullfeature,  # Feature maps
-                labels=domain_labels,  # Domain labels for the batch
+    def perform_dropout(self, feature, domain_labels, layer_index, dropout_flag, percent):
+        domain_output = None
+        if self.training and dropout_flag:
+            domain_output, mask = self.domain_discriminators[layer_index](
+                feature.clone(),  # Feature maps
+                labels=domain_labels,  # Domain labels
                 percent=percent  # Percent of channels to drop
             )
-            fullfeature = fullfeature * mask  # Apply mask to suppress domain-sensitive channels
+            feature = feature * mask  # Apply mask to feature maps
+        return feature, domain_output
 
-        # Original forward pass
+    def forward(self, x, domain_labels=None, layer_dropout_flags=None, percent=0.33):
+        x_ssl_feat, layerResult = self.ssl_model.extract_feat(x.squeeze(-1))  # Extract features
+
+        domain_outputs = []  
+        for i, layer in enumerate(layerResult):  # Iterate through extracted layers
+            feature, attention = layer
+            dropout_flag = layer_dropout_flags[i] if layer_dropout_flags is not None else True
+            feature, domain_output = self.perform_dropout(feature, domain_labels, i, dropout_flag, percent)
+            if domain_output is not None:
+                domain_outputs.append(domain_output)
+            layerResult[i] = (feature, attention)  # Update masked feature maps
+
+        y0, fullfeature = getAttenF(layerResult)  
+
         y0 = self.fc0(y0)
         y0 = self.sig(y0)
         y0 = y0.view(y0.shape[0], y0.shape[1], y0.shape[2], -1)
@@ -105,4 +117,4 @@ class Model(nn.Module):
         x = self.selu(x)
         output = self.logsoftmax(x)
 
-        return output
+        return output, domain_outputs  # both task output and domain outputs
