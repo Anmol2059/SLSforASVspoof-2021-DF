@@ -70,37 +70,49 @@ def produce_evaluation_file(dataset, model, device, save_path):
         fh.close()   
     print('Scores saved to {}'.format(save_path))
 
-def train_epoch(train_loader, model, lr,optim, device):
+def train_epoch(train_loader, model, lr, optimizer, device):
     running_loss = 0
-    
     num_total = 0.0
-    
     model.train()
 
-    #set objective (Loss) functions
-    weight = torch.FloatTensor([0.1, 0.9]).to(device)
-    criterion = nn.CrossEntropyLoss(weight=weight)
-    
-    for batch_x, batch_y in tqdm(train_loader):
-       
+    # Set objective (Loss) functions
+    task_weight = torch.FloatTensor([0.1, 0.9]).to(device)
+    task_criterion = nn.CrossEntropyLoss(weight=task_weight)  # For spoof detection
+    domain_criterion = nn.CrossEntropyLoss()  # For domain classification
+
+    for batch_x, batch_y, domain_labels in tqdm(train_loader):  # Includes domain_labels
         batch_size = batch_x.size(0)
         num_total += batch_size
-        
+
+       
         batch_x = batch_x.to(device)
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        batch_out = model(batch_x)
-        
-        batch_loss = criterion(batch_out, batch_y)
-        
-        running_loss += (batch_loss.item() * batch_size)
-       
-        optimizer.zero_grad()
-        batch_loss.backward()
-        optimizer.step()
-       
-    running_loss /= num_total
+        domain_labels = domain_labels.view(-1).type(torch.int64).to(device)
 
+        # Forward pass
+        task_output, domain_outputs = model(batch_x, domain_labels=domain_labels)  # Output includes both task and domain outputs
+
+        # Compute task loss
+        task_loss = task_criterion(task_output, batch_y)
+
+        # Compute domain adversarial loss
+        domain_loss = 0
+        for domain_output in domain_outputs:
+            domain_loss += domain_criterion(domain_output, domain_labels)
+
+        # Combine losses
+        total_loss = task_loss + domain_loss
+
+        # Backward pass and optimization
+        optimizer.zero_grad()
+        total_loss.backward()
+        optimizer.step()
+
+        running_loss += (total_loss.item() * batch_size)
+
+    running_loss /= num_total
     return running_loss
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ASVspoof2021 baseline system')
@@ -269,7 +281,19 @@ if __name__ == '__main__':
     
     train_set=Dataset_ASVspoof2019_train(args,list_IDs = file_train,labels = d_label_trn,base_dir = os.path.join(args.database_path+'ASVspoof2019_LA_train/'),algo=args.algo)
     
-    train_loader = DataLoader(train_set, batch_size=args.batch_size,num_workers=8, shuffle=True,drop_last = True)
+    train_loader = DataLoader(
+    train_set,
+    batch_size=args.batch_size,
+    num_workers=8,
+    shuffle=True,
+    drop_last=True,
+    collate_fn=lambda x: (
+        torch.stack([i[0] for i in x]),  # Audio features
+        torch.tensor([i[1] for i in x]),  # Labels (bonafide/spoof)
+        torch.tensor([i[2] for i in x])   # Domain labels (e.g., A01, A02, bonafide)
+    )  # changed collate_fn to include domain labels
+)
+
     
     del train_set,d_label_trn
     
