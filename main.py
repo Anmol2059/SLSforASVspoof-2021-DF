@@ -79,28 +79,36 @@ def train_epoch(train_loader, model, lr,optim, device):
 
     #set objective (Loss) functions
     weight = torch.FloatTensor([0.1, 0.9]).to(device)
+    attack_weight = torch.FloatTensor([0.196, 0.134, 0.134, 0.134, 0.134, 0.134, 0.134]).to(device)
     criterion = nn.CrossEntropyLoss(weight=weight)
-    
-    for batch_x, batch_y in tqdm(train_loader):
-       
+    domain_criterion = nn.CrossEntropyLoss(weight=attack_weight)
+
+    for batch_x, batch_y, domain_labels in tqdm(train_loader):
         batch_size = batch_x.size(0)
         num_total += batch_size
         
         batch_x = batch_x.to(device)
         batch_y = batch_y.view(-1).type(torch.int64).to(device)
-        batch_out = model(batch_x)
+        domain_labels = domain_labels.view(-1).type(torch.int64).to(device)
+
+        batch_out, domain_outputs = model(batch_x, domain_labels=domain_labels)
         
-        batch_loss = criterion(batch_out, batch_y)
+        task_loss = criterion(batch_out, batch_y)
+        domain_loss = 0.
+        for domain_output in domain_outputs:
+            domain_loss += domain_criterion(domain_output, domain_labels)
+        domain_loss = domain_loss / 24 * 0.01
+        total_loss = task_loss + domain_loss 
         
-        running_loss += (batch_loss.item() * batch_size)
+        running_loss += (total_loss.item() * batch_size)
        
         optimizer.zero_grad()
-        batch_loss.backward()
+        total_loss.backward()
         optimizer.step()
        
     running_loss /= num_total
 
-    return running_loss
+    return running_loss, task_loss, domain_loss
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='ASVspoof2021 baseline system')
@@ -216,7 +224,7 @@ if __name__ == '__main__':
     track = args.track
 
     #define model saving path
-    model_tag = 'SLS_baseline_{}_{}_{}_{}_{}'.format(
+    model_tag = 'SLS_baseline_w_DomainDropout24L_001xDomainLoss_{}_{}_{}_{}_{}'.format(
         track, args.loss, args.num_epochs, args.batch_size, args.lr)
     if args.comment:
         model_tag = model_tag + '_{}'.format(args.comment)
@@ -263,11 +271,11 @@ if __name__ == '__main__':
 
      
     # define train dataloader
-    d_label_trn,file_train = genSpoof_list( dir_meta =  os.path.join(args.protocols_path+'LA/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt'),is_train=True,is_eval=False)
+    d_label_trn,file_train, attack_labels = genSpoof_list( dir_meta =  os.path.join(args.protocols_path+'LA/ASVspoof2019_LA_cm_protocols/ASVspoof2019.LA.cm.train.trn.txt'),is_train=True,is_eval=False)
     
     print('no. of training trials',len(file_train))
     
-    train_set=Dataset_ASVspoof2019_train(args,list_IDs = file_train,labels = d_label_trn,base_dir=os.path.join(args.database_path+'LA/ASVspoof2019_LA_train/'),algo=args.algo)
+    train_set=Dataset_ASVspoof2019_train(args,list_IDs = file_train,labels = d_label_trn,attack_labels=attack_labels, base_dir=os.path.join(args.database_path+'LA/ASVspoof2019_LA_train/'),algo=args.algo)
     
     train_loader = DataLoader(train_set, batch_size=args.batch_size,num_workers=8, shuffle=True,drop_last = True)
     
@@ -298,7 +306,7 @@ if __name__ == '__main__':
 
     for epoch in range(num_epochs):
         
-        running_loss = train_epoch(train_loader,model, args.lr,optimizer, device)
+        running_loss, cls_loss, domain_loss = train_epoch(train_loader,model, args.lr,optimizer, device)
         #val_loss, val_acc = evaluate_accuracy(dev_loader, model, device)
 
         if running_loss < best_val_loss:
@@ -312,11 +320,11 @@ if __name__ == '__main__':
         #writer.add_scalar('val_loss',0, epoch)
         #writer.add_scalar('val_acc', 0, epoch)
         writer.add_scalar('loss', running_loss, epoch)
-        print('\n{} - {} - {} -{}'.format(epoch,
-                                                   running_loss,0,0))
+        print('\n{} - {} - {} - {}'.format(epoch,
+                                                   running_loss, cls_loss, domain_loss))
         torch.save(model.state_dict(), os.path.join(
             model_save_path, 'epoch_{}.pth'.format(epoch)))
 
-        if patience_counter >= 1:
+        if patience_counter >= 5:
             print("Early stopping triggered, best model is epoch: ", epoch-1)
             break

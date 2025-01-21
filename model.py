@@ -35,9 +35,9 @@ class SSLModel(nn.Module):
                 input_tmp = input_data
                 
             # [batch, length, dim]
-            emb = self.model(input_tmp, mask=False, features_only=True)['x']
+            # emb = self.model(input_tmp, mask=False, features_only=True)['x']
             layerresult = self.model(input_tmp, mask=False, features_only=True)['layer_results']
-        return emb, layerresult
+        return layerresult
 
 def getAttenF(layerResult):
     poollayerResult = []
@@ -57,9 +57,9 @@ def getAttenF(layerResult):
     fullfeature = torch.cat(fullf, dim=1)
     return layery, fullfeature
 
-
+from LayerDiscriminator import LayerDiscriminator
 class Model(nn.Module):
-    def __init__(self, args,device):
+    def __init__(self, args,device, num_domains=7):
         super().__init__()
         self.device = device
         self.ssl_model = SSLModel(self.device)
@@ -71,10 +71,41 @@ class Model(nn.Module):
         self.fc3 = nn.Linear(1024,2)
         self.logsoftmax = nn.LogSoftmax(dim=1)
 
+        self.domain_discriminators = nn.ModuleList([
+            LayerDiscriminator(
+                num_channels=1024,  # Adjust based on each layer's channel size
+                num_classes=num_domains,
+                lambd=1.0  # Gradient reversal strength
+            ) for _ in range(24)  # Assuming 24 layers in `layerResult`
+        ])
 
+    def perform_dropout(self, feature, domain_labels, layer_index, dropout_flag, percent):
+        if dropout_flag:
+            domain_output, mask = self.domain_discriminators[layer_index](
+                feature.clone(),  # Feature maps
+                labels=domain_labels,  # Domain labels
+                percent=percent  # Percent of channels to drop
+            )
+            feature = feature * mask  # Apply mask to feature maps
+            return feature, domain_output
+        else:
+            return feature, None
 
-    def forward(self, x):
-        x_ssl_feat, layerResult = self.ssl_model.extract_feat(x.squeeze(-1)) #layerresult = [(x,z),24个] x(201,1,1024) z(1,201,201)
+    def forward(self, x, domain_labels=None, layer_dropout_flags=None, percent=0.33):
+        layerResult = self.ssl_model.extract_feat(x.squeeze(-1)) #layerresult = [(x,z),24个] x(201,1,1024) z(1,201,201)
+
+        domain_outputs = []
+        if domain_labels is not None:
+            for i, layer in enumerate(layerResult):  # Iterate through extracted layers
+                feature, attention = layer
+                feature = feature.permute(1, 2, 0)
+                dropout_flag = layer_dropout_flags[i] if layer_dropout_flags is not None else True
+                feature, domain_output = self.perform_dropout(feature, domain_labels, i, dropout_flag, percent)
+                feature = feature.permute(2, 0, 1)
+                if domain_output is not None:
+                    domain_outputs.append(domain_output)
+                layerResult[i] = (feature, attention)
+            
         y0, fullfeature = getAttenF(layerResult)
         y0 = self.fc0(y0)
         y0 = self.sig(y0)
@@ -91,5 +122,7 @@ class Model(nn.Module):
         x = self.fc3(x)
         x = self.selu(x)
         output = self.logsoftmax(x)
-
-        return output
+        if domain_labels is not None:
+            return output, domain_outputs
+        else:
+            return output

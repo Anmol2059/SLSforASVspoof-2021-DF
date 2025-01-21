@@ -27,16 +27,17 @@ def genSpoof_list(dir_meta, is_train=False, is_eval=False):
     
     d_meta = {}
     file_list=[]
+    attack_label_list=[]
     with open(dir_meta, 'r') as f:
          l_meta = f.readlines()
 
     if (is_train):
         for line in l_meta:
-             _,key,_,_,label = line.strip().split()
-             
+             _,key,_,spoof_type,label = line.strip().split()
+             attack_label_list.append(spoof_type)
              file_list.append(key)
              d_meta[key] = 1 if label == 'bonafide' else 0
-        return d_meta,file_list
+        return d_meta,file_list, attack_label_list
     
     elif(is_eval):
         for line in l_meta:
@@ -53,8 +54,6 @@ def genSpoof_list(dir_meta, is_train=False, is_eval=False):
         return d_meta,file_list
 
 
-
-
 def pad(x, max_len=64600):
     x_len = x.shape[0]
     if x_len >= max_len:
@@ -66,20 +65,29 @@ def pad(x, max_len=64600):
 			
 
 class Dataset_ASVspoof2019_train(Dataset):
-	def __init__(self,args,list_IDs, labels, base_dir,algo):
+	def __init__(self,args,list_IDs, labels, attack_labels, base_dir,algo):
 		'''self.list_IDs	: list of strings (each string: utt key),
 			self.labels      : dictionary (key: utt key, value: label integer)'''
 			
 		self.list_IDs = list_IDs
+		self.attack_labels = attack_labels
 		self.labels = labels
 		self.base_dir = base_dir
 		self.algo=algo
 		self.args=args
 		self.cut=64600 # take ~4 sec audio (64600 samples)
+		self.domain_map = {
+			"A01": 1,
+            "A02": 2,
+            "A03": 3,
+            "A04": 4,
+            "A05": 5,
+            "A06": 6,
+            "-": 0  # changed part
+        }
 
 	def __len__(self):
 		return len(self.list_IDs)
-
 
 	def __getitem__(self, index):
 		utt_id = self.list_IDs[index]
@@ -88,10 +96,9 @@ class Dataset_ASVspoof2019_train(Dataset):
 		X_pad= pad(Y,self.cut)
 		x_inp= Tensor(X_pad)
 		target = self.labels[utt_id]
-		
-		return x_inp, target
-            
-            
+		domain_label = self.domain_map[self.attack_labels[index]]
+		return x_inp, target, domain_label
+     
 class Dataset_ASVspoof2021_eval(Dataset):
 	def __init__(self, list_IDs, base_dir):
 		'''self.list_IDs	: list of strings (each string: utt key),
